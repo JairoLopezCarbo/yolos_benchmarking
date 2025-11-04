@@ -20,15 +20,28 @@ Saves `predictions/human_scores_plot.png` and shows an interactive window.
 from pathlib import Path
 import re
 import math
-import argparse
-import matplotlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
-CSV_PATH = Path(__file__).resolve().parent / "human_scores.csv"
-OUT_PNG = Path(__file__).resolve().parent / "human_scores_plot.png"
+# =============================
+# Centralized configuration
+# =============================
+CONFIG = {
+    # Only two configurable options for the plot
+    "show_legend": True,      # whether to display the legend
+    "log_ms_axis": True,      # time axis scale: True=logarithmic, False=linear
+    # Paths (relative to this script's folder)
+    "paths": {
+        "csv": "predictions/human_scores.csv",
+        "out_png": "plot.png",
+    },
+}
+
+ROOT = Path(__file__).resolve().parent
+CSV_PATH = ROOT / CONFIG["paths"]["csv"]
+OUT_PNG = ROOT / CONFIG["paths"]["out_png"]
 
 
 def detect_model_columns(df: pd.DataFrame):
@@ -166,7 +179,7 @@ def read_human_scores(csv_path: Path):
     return models, unified, score_stats
 
 
-def plot(models, timings, score_stats, out_png=OUT_PNG):
+def plot(models, benchmark, score_stats, out_png=OUT_PNG):
     n = len(models)
     x = np.arange(n)
     # group layout parameters
@@ -180,18 +193,21 @@ def plot(models, timings, score_stats, out_png=OUT_PNG):
     # compute score_x so the score bar sits just to the right of the block
     score_x = x + block_w / 2.0 + preferred_gap + bar_w / 2.0
 
-    fig, ax_time = plt.subplots(figsize=(max(8, n * 2.5), 6))
+    # Figure size derived from config and number of models
+    fig_w = max(8.0, n * 2.5)
+    fig_h = 6.0
+    fig, ax_time = plt.subplots(figsize=(fig_w, fig_h))
     ax_score = ax_time.twinx()
 
     # Plot timing groups on ax_time (ms)
-    total_avgs = [timings[m].get('total_avg', math.nan) for m in models]
-    total_stds = [timings[m].get('total_std', math.nan) for m in models]
-    pre_avgs = [timings[m].get('preprocess_avg', math.nan) for m in models]
-    inf_avgs = [timings[m].get('inference_avg', math.nan) for m in models]
-    post_avgs = [timings[m].get('postprocess_avg', math.nan) for m in models]
-    pre_stds = [timings[m].get('preprocess_std', math.nan) for m in models]
-    inf_stds = [timings[m].get('inference_std', math.nan) for m in models]
-    post_stds = [timings[m].get('postprocess_std', math.nan) for m in models]
+    total_avgs = [benchmark[m].get('total_avg', math.nan) for m in models]
+    total_stds = [benchmark[m].get('total_std', math.nan) for m in models]
+    pre_avgs = [benchmark[m].get('preprocess_avg', math.nan) for m in models]
+    inf_avgs = [benchmark[m].get('inference_avg', math.nan) for m in models]
+    post_avgs = [benchmark[m].get('postprocess_avg', math.nan) for m in models]
+    pre_stds = [benchmark[m].get('preprocess_std', math.nan) for m in models]
+    inf_stds = [benchmark[m].get('inference_std', math.nan) for m in models]
+    post_stds = [benchmark[m].get('postprocess_std', math.nan) for m in models]
 
     # Big total bars (semi-transparent) covering the whole block
     big_w = block_w
@@ -225,14 +241,15 @@ def plot(models, timings, score_stats, out_png=OUT_PNG):
     ax_time.set_ylabel('Time (ms)')
     ax_time.set_xticks(x)
     # make labels horizontal and split long names at underscores for readability
-    wrapped = [m.replace('_', '\n') for m in models]
-    ax_time.set_xticklabels(wrapped, rotation=0, ha='center', fontsize=9)
+    labels = [m.replace('_', '\n') for m in models]
+    ax_time.set_xticklabels(labels, rotation=0, ha='center', fontsize=9)
 
     # Set log scale for ms axis; avoid zero or negative values
     all_times = [v for v in total_avgs + pre_avgs + inf_avgs + post_avgs if (v is not None and not math.isnan(v))]
     if all_times:
         min_pos = min([v for v in all_times if v > 0]) if any(v > 0 for v in all_times) else 1e-3
-        ax_time.set_yscale('log')
+        if CONFIG.get("log_ms_axis", True):
+            ax_time.set_yscale('log')
         ax_time.set_ylim(max(min_pos * 0.5, 1e-3), max(all_times) * 1.6)
 
     # Plot score stats on ax_score
@@ -258,15 +275,23 @@ def plot(models, timings, score_stats, out_png=OUT_PNG):
     lines_score, labels_score = ax_score.get_legend_handles_labels()
     from matplotlib.lines import Line2D
     proxy_minmax = Line2D([0], [0], color='k', marker='^', linestyle='None', label='score min/max')
-    legend_handles = lines_time + lines_score + [proxy_minmax]
-    legend_labels = labels_time + labels_score + ['score min/max']
-    # place legend centered below the axes, inside the figure, so it appears in the PNG
-    ax_time.legend(legend_handles, legend_labels, loc='upper center', bbox_to_anchor=(0.5, -0.16), ncol=min(4, len(legend_handles)), frameon=True)
+    if CONFIG.get("show_legend", True):
+        legend_handles = lines_time + lines_score + [proxy_minmax]
+        legend_labels = labels_time + labels_score + ['score min/max']
+        # place legend centered below the axes, inside the figure, so it appears in the PNG
+        ax_time.legend(
+            legend_handles,
+            legend_labels,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=min(4, len(legend_handles)),
+            frameon=True,
+        )
 
     plt.title('Model timing breakdown and human scores')
     plt.tight_layout()
-    # make room at the bottom for the legend placed below the axes
-    plt.subplots_adjust(bottom=0.22)
+    # make room at the bottom for the legend placed below the axes (if shown)
+    plt.subplots_adjust(bottom=0.22 if CONFIG.get("show_legend", True) else 0.1)
 
     # Always save PNG
     try:
@@ -277,16 +302,11 @@ def plot(models, timings, score_stats, out_png=OUT_PNG):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Plot human_scores.csv')
-    parser.add_argument('--csv', type=Path, default=CSV_PATH, help='Path to human_scores.csv')
-    parser.add_argument('--out', type=Path, default=OUT_PNG, help='Output PNG path')
-    args = parser.parse_args()
-
-    models, timings, score_stats = read_human_scores(args.csv)
+    models, benchmark, score_stats = read_human_scores(CSV_PATH)
     if not models:
-        print('No model columns detected in', args.csv)
+        print('No model columns detected in', CSV_PATH)
         return
-    plot(models, timings, score_stats, out_png=args.out)
+    plot(models, benchmark, score_stats, out_png=OUT_PNG)
 
 
 if __name__ == '__main__':

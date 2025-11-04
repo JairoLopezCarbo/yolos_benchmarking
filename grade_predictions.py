@@ -1,6 +1,8 @@
 """
 Interactive grader: shows the same image across model folders side-by-side and
-prompts you to score each model 1–10. Results saved to human_scores.csv (wide format).
+prompts you to score each model 1–10. Results saved to a CSV in predictions/.
+
+Refactored to use a single CONFIG dict at the top for readability.
 """
 from pathlib import Path
 import csv
@@ -10,6 +12,39 @@ import sys
 import select
 import time
 import random
+
+
+# =============================
+# Centralized configuration
+# =============================
+CONFIG = {
+    "predictions": {
+        "root": "predictions",
+        # Model folder names under predictions/ containing per-model images and benchmark.csv
+        "models": [
+            "yolo11n-seg_epochs-50_imgsz-640",
+            "yolo11s-seg_epochs-50_imgsz-640",
+        ],
+    },
+    # Output CSV filename (relative to predictions root)
+    "output_csv": "graded_predictions.csv",
+    "display": {
+        # Shuffle display order each image to anonymize models
+        "shuffle": True,
+        # Overlay numeric labels (1..N) on each tile
+        "numeric_labels": True,
+    },
+    "scoring": {
+        "min": 1,
+        "max": 10,
+        # Guidance text shown when asking for a score
+        "guidelines": [
+            "[1-4] -> Missing labels",
+            "[5-7] -> Misplaced labels",
+            "[8-10] -> Correct labels",
+        ],
+    },
+}
 
 
 def compute_grid(n: int, win_w: int, win_h: int) -> tuple[int, int]:
@@ -85,14 +120,15 @@ def compose_grid(images: list[np.ndarray], labels: list[str], win_w: int, win_h:
     canvas = canvas[:win_h, :win_w]
     return canvas
 
-PREDICTIONS_ROOT = Path(__file__).resolve().parent
-MODEL_FOLDERS = ["yolo11n-seg_epochs-50_imgsz-640","yolo11s-seg_epochs-50_imgsz-640"]
-OUTPUT_CSV = PREDICTIONS_ROOT / "human_scores.csv"
+ROOT_DIR = Path(__file__).resolve().parent
+PREDICTIONS_ROOT = ROOT_DIR / CONFIG["predictions"]["root"]
+MODEL_FOLDERS = list(CONFIG["predictions"]["models"])
+OUTPUT_CSV = CONFIG["output_csv"]
 
 
 # Precompute timing summaries (avg and std) per model so we can save them
-def summarize_timings(timings_path: Path) -> dict:
-    """Read a timings.csv and return summary stats for columns of interest.
+def summarize_benchmark(benchmark_path: Path) -> dict:
+    """Read a benchmark.csv and return summary stats for columns of interest.
 
     Returns dict with keys: total_ms_avg, total_ms_std, preprocess_ms_avg,
     preprocess_ms_std, inference_ms_avg, inference_ms_std, postprocess_ms_avg,
@@ -109,12 +145,12 @@ def summarize_timings(timings_path: Path) -> dict:
         "postprocess_ms_avg": math.nan,
         "postprocess_ms_std": math.nan,
     }
-    if not timings_path.exists():
+    if not benchmark_path.exists():
         return stats
 
     vals = {"total_ms": [], "preprocess_ms": [], "inference_ms": [], "postprocess_ms": []}
     try:
-        with open(timings_path, newline='') as f:
+        with open(benchmark_path, newline='') as f:
             r = csv.DictReader(f)
             for row in r:
                 for k in vals.keys():
@@ -154,22 +190,21 @@ def summarize_timings(timings_path: Path) -> dict:
 # compute timing summaries for every model folder
 TIMING_SUMMARIES = {}
 for m in MODEL_FOLDERS:
-    TIMING_SUMMARIES[m] = summarize_timings(PREDICTIONS_ROOT / m / 'timings.csv')
+    TIMING_SUMMARIES[m] = summarize_benchmark(PREDICTIONS_ROOT / m / 'benchmark.csv')
 
 # Collect image IDs that exist in ALL model folders
 common = None
+image_exts = {".jpg", ".jpeg", ".png", ".bmp"}
 for m in MODEL_FOLDERS:
-    imgs = sorted([p.name for p in (PREDICTIONS_ROOT / m).iterdir() if p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp'}])
+    imgs = sorted([p.name for p in (PREDICTIONS_ROOT / m).iterdir() if p.suffix.lower() in image_exts])
     ids = [Path(x).stem for x in imgs]
     common = set(ids) if common is None else common.intersection(ids)
 
 common = sorted(common) if common else []
 print(f"Found {len(common)} common images across models: {MODEL_FOLDERS}")
 
-# Prepare CSV header in new layout: columns = models. First rows will be
-# timing summary statistics (total_avg, total_std, preprocess_avg, preprocess_std,
-# inference_avg, inference_std, postprocess_avg, postprocess_std). After those
-# stat rows, each subsequent row is a frame: one score per model (columns).
+# Prepare CSV header: first column is a row label (stat name or image id),
+# remaining columns are models. First rows are timing stats; then one row per image id.
 if not OUTPUT_CSV.exists():
     header = ["row", *MODEL_FOLDERS]
     stats_spec = [
@@ -224,16 +259,22 @@ for img_id in common:
 
     # Determine a reasonable initial window size based on number of images
     n_imgs = len(imgs)
-    # Shuffle display order to anonymize models; create numeric labels 1..n
+    # Shuffle display order to anonymize models if enabled; create numeric labels 1..n
     order = list(range(n_imgs))
-    random.shuffle(order)
+    if CONFIG["display"].get("shuffle", True):
+        random.shuffle(order)
     shuffled_imgs = [imgs[i] for i in order]
-    numeric_labels = [str(i + 1) for i in range(n_imgs)]
-    base_cell_w, base_cell_h = 480, 360
+    numeric_labels = [str(i + 1) for i in range(n_imgs)] if CONFIG["display"].get("numeric_labels", True) else [""] * n_imgs
+    base_cell_w = 480
+    base_cell_h = 360
     cols0 = int(np.ceil(np.sqrt(n_imgs)))
     rows0 = int(np.ceil(n_imgs / cols0))
-    start_w = min(1600, max(800, cols0 * base_cell_w))
-    start_h = min(1000, max(600, rows0 * base_cell_h))
+    min_w = 800
+    min_h = 600
+    max_w = 1600
+    max_h = 1000
+    start_w = min(max_w, max(min_w, cols0 * base_cell_w))
+    start_h = min(max_h, max(min_h, rows0 * base_cell_h))
 
     # Create resizable window and show initial grid
     win_name = f"{img_id} :: {' | '.join(MODEL_FOLDERS)}"
@@ -246,11 +287,12 @@ for img_id in common:
     cv2.imshow(win_name, initial_grid)
     # Allow the window to refresh
     cv2.waitKey(1)
-    print("Please enter a number from 1 to 10:\n"+
-                      "\t[1-4] -> Missing labels\n" +
-                      "\t[5-7] -> Misplaced labels\n" +
-                      "\t[8-10] -> Correct labels\n" +
-        f"Scoring image: {img_id}")
+    guidelines = "\n".join(CONFIG["scoring"]["guidelines"]) if CONFIG["scoring"].get("guidelines") else ""
+    print(
+        f"Please enter a number from {CONFIG['scoring']['min']} to {CONFIG['scoring']['max']}:\n" +
+        (guidelines + "\n" if guidelines else "") +
+        f"Scoring image: {img_id}"
+    )
 
     # Dynamic resizing loop + non-blocking stdin read so window stays responsive
     position_scores = []
@@ -261,7 +303,7 @@ for img_id in common:
         last_w, last_h = start_w, start_h
 
     for pos in range(n_imgs):
-        prompt = f"Score for image {pos + 1} (1–10): "
+        prompt = f"Score for image {pos + 1} ({CONFIG['scoring']['min']}–{CONFIG['scoring']['max']}): "
         print(prompt, end='', flush=True)
         # For each score, wait until a valid number is typed in the terminal.
         last_render_ts = 0.0
@@ -294,15 +336,16 @@ for img_id in common:
                 line = sys.stdin.readline().strip()
                 try:
                     s = float(line)
-                    if 1 <= s <= 10:
+                    if CONFIG['scoring']['min'] <= s <= CONFIG['scoring']['max']:
                         position_scores.append(s)
                         break
                 except Exception:
                     pass
-                print("Please enter a number from 1 to 10:\n"+
-                      "\t[1-4] -> Missing labels\n" +
-                      "\t[5-7] -> Misplaced labels\n" +
-                      "\t[8-10] -> Correct labels", flush=True)
+                print(
+                    f"Please enter a number from {CONFIG['scoring']['min']} to {CONFIG['scoring']['max']}:\n" +
+                    (guidelines if guidelines else ""),
+                    flush=True,
+                )
 
     # Map position-based scores back to original model order and write a
     # single row with one score per model (columns align with MODEL_FOLDERS).
