@@ -23,15 +23,13 @@ from ultralytics import YOLO
 MODE = "MULTI_PRETRAIN"  # "MULTI_PRETRAIN" | "SINGLE_PRETRAIN_MULTI_CFG"
 
 # Dataset config
-DATA_YAML = "data.yaml"  # path to your dataset yaml
+DATA_YAML = "containers_dataset/data.yaml"  # path to your dataset yaml
 
-# Where to read pretrained checkpoints from (for MULTI_PRETRAIN)
-PRETRAIN_MODELS_DIR = Path("./pretrained")
 # Which pretrained models to use (filenames inside PRETRAIN_MODELS_DIR)
-PRETRAIN_MODEL_FILES = [
+PRETRAIN_MODELS = [
     "yolo11n-seg.pt",
-    # "yolo11s-seg.pt",
-    # "yolo11m-seg.pt",
+    "yolo11s-seg.pt",
+    "yolo11m-seg.pt",
 ]
 
 # Where to put your final .pt exports after training
@@ -47,22 +45,18 @@ COMMON_TRAIN_ARGS = dict(
 )
 
 # For SINGLE_PRETRAIN_MULTI_CFG: pick one base pretrained model
-SINGLE_PRETRAIN_MODEL = PRETRAIN_MODELS_DIR / "yolo11n-seg.pt"
+SINGLE_PRETRAIN_MODEL = "yolo11n-seg.pt"
 
 # Grid of variants for SINGLE_PRETRAIN_MULTI_CFG
 TRAIN_PARAM_VARIANTS = [
     {"epochs": 50, "imgsz": 640},
     {"epochs": 50, "imgsz": 960},
-    # {"epochs": 100, "imgsz": 640},
+    {"epochs": 100, "imgsz": 640},
 ]
 
 # --------------------
 # === HELPERS ===
 # --------------------
-
-def _safe_name(path: Path) -> str:
-    return path.stem  # filename without extension
-
 
 def _copy_best_to_output(save_dir: Path, out_name: str) -> Path:
     """Copy runs/.../weights/best.pt to OUTPUT_DIR/out_name.pt"""
@@ -79,14 +73,12 @@ def _copy_best_to_output(save_dir: Path, out_name: str) -> Path:
 # --------------------
 
 def run_multi_pretrain():
-    for fname in PRETRAIN_MODEL_FILES:
-        pre_ckpt = PRETRAIN_MODELS_DIR / fname
-        print(f"\n>>> Training from pretrained: {pre_ckpt}")
-        model = YOLO(str(pre_ckpt))
+    for prt_model in PRETRAIN_MODELS:
+        print(f"\n>>> Training from pretrained: {prt_model}")
+        model = YOLO(prt_model)
         results = model.train(data=DATA_YAML, **COMMON_TRAIN_ARGS)
         # Build name and export
-        name = _safe_name(pre_ckpt)
-        out_name = f"{name}_epochs-{COMMON_TRAIN_ARGS['epochs']}_imgsz-{COMMON_TRAIN_ARGS['imgsz']}"
+        out_name = f"{prt_model}_epochs-{COMMON_TRAIN_ARGS['epochs']}_imgsz-{COMMON_TRAIN_ARGS['imgsz']}"
         final_path = _copy_best_to_output(Path(results.save_dir), out_name)
         print(f"Saved trained model -> {final_path}")
 
@@ -98,10 +90,9 @@ def run_single_pretrain_multi_cfg():
     for variant in TRAIN_PARAM_VARIANTS:
         args = {**COMMON_TRAIN_ARGS, **variant}
         print(f"\n>>> Training {SINGLE_PRETRAIN_MODEL} with variant: {variant}")
-        model = YOLO(str(SINGLE_PRETRAIN_MODEL))
+        model = YOLO(SINGLE_PRETRAIN_MODEL)
         results = model.train(data=DATA_YAML, **args)
-        name = _safe_name(SINGLE_PRETRAIN_MODEL)
-        out_name = f"{name}_epochs-{args['epochs']}_imgsz-{args['imgsz']}"
+        out_name = f"{SINGLE_PRETRAIN_MODEL}_epochs-{args['epochs']}_imgsz-{args['imgsz']}"
         final_path = _copy_best_to_output(Path(results.save_dir), out_name)
         print(f"Saved trained model -> {final_path}")
 
