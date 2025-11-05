@@ -22,15 +22,22 @@ CONFIG = {
         "root": "predictions",
         # Model folder names under predictions/ containing per-model images and benchmark.csv
         "models": [
-            "yolo11n-seg_epochs-50_imgsz-640",
-            "yolo11s-seg_epochs-50_imgsz-640",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.25_IOU-0.25",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.25_IOU-0.5",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.25_IOU-0.75",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.25",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.75",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.55_IOU-0.25",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.55_IOU-0.5",
+            "yolo11n-seg_epochs-50_imgsz-640_CONF-0.55_IOU-0.75",
         ],
     },
     # Output CSV filename (relative to predictions root)
     "output_csv": "graded_predictions.csv",
     "display": {
         # Shuffle display order each image to anonymize models
-        "shuffle": True,
+        "shuffle": False,
         # Overlay numeric labels (1..N) on each tile
         "numeric_labels": True,
     },
@@ -123,7 +130,7 @@ def compose_grid(images: list[np.ndarray], labels: list[str], win_w: int, win_h:
 ROOT_DIR = Path(__file__).resolve().parent
 PREDICTIONS_ROOT = ROOT_DIR / CONFIG["predictions"]["root"]
 MODEL_FOLDERS = list(CONFIG["predictions"]["models"])
-OUTPUT_CSV = CONFIG["output_csv"]
+OUTPUT_CSV = ROOT_DIR / CONFIG["output_csv"]
 
 
 # Precompute timing summaries (avg and std) per model so we can save them

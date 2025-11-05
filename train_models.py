@@ -5,8 +5,8 @@
 Train YOLO (Ultralytics) segmentation models with a single, readable CONFIG dict.
 
 Modes supported:
-- MULTI_PRETRAIN: train several pretrained models with the same train params.
-- SINGLE_PRETRAIN_MULTI_CFG: train one pretrained model over a grid of params
+- MULTI_MODELS: train several pretrained models with the same train params.
+- SINGLE_MODEL_MULTI_CFG: train one pretrained model over a grid of params
     (different epochs/imgsz, etc.).
 
 Output filename format: <model_name>_epochs-<X>_imgsz-<Y>.pt (model_name without .pt)
@@ -20,9 +20,8 @@ from ultralytics import YOLO
 # =============================
 # Centralized configuration
 # =============================
-# Edit values here. No other code changes needed for common tweaks.
 CONFIG = {
-    "mode": "MULTI_PRETRAIN",  # "MULTI_PRETRAIN" | "SINGLE_PRETRAIN_MULTI_CFG"
+    "mode": "MULTI_MODELS",  # "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG"
     "data": {
         "yaml": "containers_dataset/data.yaml",  # path to dataset yaml
     },
@@ -80,7 +79,7 @@ def _model_stem(name: str) -> str:
     return Path(name).stem
 
 
-def run_multi_pretrain(cfg: dict):
+def run_multi_models(cfg: dict):
     data_yaml = cfg["data"]["yaml"]
     out_dir = Path(cfg["output"]["dir"])    
     common = dict(cfg["train"]["common"])
@@ -96,7 +95,7 @@ def run_multi_pretrain(cfg: dict):
         print(f"Saved trained model -> {final_path}")
 
 
-def run_single_pretrain_multi_cfg(cfg: dict):
+def run_single_model_multi_cfg(cfg: dict):
     data_yaml = cfg["data"]["yaml"]
     out_dir = Path(cfg["output"]["dir"])    
     base_model = cfg["models"]["single_pretrain"]
@@ -116,9 +115,9 @@ def run_single_pretrain_multi_cfg(cfg: dict):
 
 if __name__ == "__main__":
     mode = (CONFIG.get("mode") or "").upper()
-    if mode == "MULTI_PRETRAIN":
-        run_multi_pretrain(CONFIG)
-    elif mode == "SINGLE_PRETRAIN_MULTI_CFG":
-        run_single_pretrain_multi_cfg(CONFIG)
+    if mode == "MULTI_MODELS":
+        run_multi_models(CONFIG)
+    elif mode == "SINGLE_MODEL_MULTI_CFG":
+        run_single_model_multi_cfg(CONFIG)
     else:
-        raise ValueError(f"Unknown CONFIG['mode']: {CONFIG.get('mode')} (expected 'MULTI_PRETRAIN' or 'SINGLE_PRETRAIN_MULTI_CFG')")
+        raise ValueError(f"Unknown CONFIG['mode']: {CONFIG.get('mode')} (expected 'MULTI_MODELS' or 'SINGLE_MODEL_MULTI_CFG')")
