@@ -31,10 +31,10 @@ import matplotlib.pyplot as plt
 CONFIG = {
     # Only two configurable options for the plot
     "show_legend": True,      # whether to display the legend
-    "log_ms_axis": True,      # time axis scale: True=logarithmic, False=linear
+    "log_ms_axis": False,      # time axis scale: True=logarithmic, False=linear
     # Paths (relative to this script's folder)
     "paths": {
-        "csv": "predictions/human_scores.csv",
+        "csv": "graded_predictions.csv",
         "out_png": "plot.png",
     },
 }

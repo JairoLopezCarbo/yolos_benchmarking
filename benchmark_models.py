@@ -51,9 +51,9 @@ CONFIG = {
             "retina_masks": True,
         },
         "variants": [  # param sweep for mode 2
-            {"conf": 0.25, "iou": 0.25},
-            {"conf": 0.25, "iou": 0.50},
-            {"conf": 0.25, "iou": 0.75},
+            {"conf": 0.4, "iou": 0.25},
+            {"conf": 0.4, "iou": 0.50},
+            {"conf": 0.4, "iou": 0.75},
         ],
     },
     "predictions": {
@@ -68,7 +68,7 @@ CONFIG = {
         "color_mode": "random",  # "random" | "by_class"
         # visual styles (unified)
         "alpha": 0.3,            # opacity for overlays (masks and boxes)
-        "thickness": 7,           # outline thickness for both masks and boxes
+        "thickness": 5,           # outline thickness for both masks and boxes
         # legend settings (used only with color_mode='by_class')
         "show_legend": False,
         "legend_loc": "top-left",  # "top-left" | "top-right" | "bottom-left" | "bottom-right"

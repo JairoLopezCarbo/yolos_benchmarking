@@ -40,6 +40,7 @@ CONFIG = {
         "shuffle": False,
         # Overlay numeric labels (1..N) on each tile
         "numeric_labels": True,
+        "native_scale": False,
     },
     "scoring": {
         "min": 1,
@@ -52,6 +53,15 @@ CONFIG = {
         ],
     },
 }
+
+# --- helper: choose best interpolation for the direction of scaling ---
+def _best_interp(scale: float) -> int:
+    if scale < 1.0:
+        return cv2.INTER_AREA       # best for downscale
+    elif scale <= 2.0:
+        return cv2.INTER_CUBIC      # good for mild upscales
+    else:
+        return cv2.INTER_LANCZOS4   # best for large upscales
 
 
 def compute_grid(n: int, win_w: int, win_h: int) -> tuple[int, int]:
@@ -67,29 +77,53 @@ def compute_grid(n: int, win_w: int, win_h: int) -> tuple[int, int]:
     rows = int(np.ceil(n / cols))
     return cols, rows
 
-
-def compose_grid(images: list[np.ndarray], labels: list[str], win_w: int, win_h: int) -> np.ndarray:
-    """Compose a grid image preserving aspect ratio; draws a small label string
-    at the top-left corner of each placed image when provided.
-
-    - images: list of BGR images (np.uint8)
-    - labels: list of strings per image (e.g., '1', '2', '3'); may be empty
-    - win_w, win_h: current window dimensions
-    Returns: BGR canvas of size (win_h, win_w, 3)
+def compose_grid(images: list[np.ndarray], labels: list[str], win_w: int, win_h: int, native_scale: bool = False) -> np.ndarray:
+    """
+    If native_scale=True, images are placed at their original resolution and padded into cells.
+    No cv2.resize is applied to the tiles. This preserves full detail; panning/fit is handled by the window.
     """
     n = len(images)
     if n == 0:
         return np.zeros((max(1, win_h), max(1, win_w), 3), dtype=np.uint8)
 
     cols, rows = compute_grid(n, win_w, win_h)
-    # Compute cell size (no margins). Images are aspect-preserving (letterboxed)
+
+    if native_scale:
+        # Cell size = global max image size -> pad only, never resize
+        max_w = max(img.shape[1] for img in images)
+        max_h = max(img.shape[0] for img in images)
+        cell_w, cell_h = max_w, max_h
+        canvas = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+        canvas[:] = (20, 20, 20)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.5, min(cell_w, cell_h) / 400.0)
+        thickness = 1
+
+        for idx, img in enumerate(images):
+            r = idx // cols
+            c = idx % cols
+            y0 = r * cell_h
+            x0 = c * cell_w
+            ih, iw = img.shape[:2]
+            # center without scaling
+            x_off = x0 + (cell_w - iw) // 2
+            y_off = y0 + (cell_h - ih) // 2
+            canvas[y_off:y_off + ih, x_off:x_off + iw] = img
+
+            if labels and idx < len(labels) and labels[idx]:
+                text = str(labels[idx])
+                org = (x_off + 6, y_off + 20)
+                cv2.putText(canvas, text, org, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                cv2.putText(canvas, text, org, font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        # Do NOT crop to (win_h, win_w) in native mode; keep full-res canvas
+        return canvas
+
+    # --- original "fit-to-window" path, but with higher-quality upscaling ---
     cell_w = max(1, win_w // max(1, cols))
     cell_h = max(1, win_h // max(1, rows))
-
     canvas = np.zeros((max(1, rows * cell_h), max(1, cols * cell_w), 3), dtype=np.uint8)
-    # Slightly dark background for any unused area
     canvas[:] = (20, 20, 20)
-    # Text settings for overlaying small numbers
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = max(0.5, min(cell_w, cell_h) / 400.0)
     thickness = 1
@@ -103,29 +137,26 @@ def compose_grid(images: list[np.ndarray], labels: list[str], win_w: int, win_h:
         if img is None or img.size == 0:
             continue
 
-        # Resize image to fit inside the cell preserving aspect (letterbox)
         ih, iw = img.shape[:2]
         scale = min(cell_w / max(1, iw), cell_h / max(1, ih))
-        new_w = max(1, int(iw * scale))
-        new_h = max(1, int(ih * scale))
+        new_w = max(1, int(round(iw * scale)))
+        new_h = max(1, int(round(ih * scale)))
         try:
-            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+            resized = cv2.resize(img, (new_w, new_h), interpolation=_best_interp(scale))
         except Exception:
             continue
         x_off = x0 + (cell_w - new_w) // 2
         y_off = y0 + (cell_h - new_h) // 2
         canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
-        # Draw label (number) at image top-left if provided
+
         if labels and idx < len(labels) and labels[idx]:
             text = str(labels[idx])
             org = (x_off + 6, y_off + 20)
-            # simple outline for readability
             cv2.putText(canvas, text, org, font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
             cv2.putText(canvas, text, org, font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
-    # Ensure exact window size (crop if needed)
-    canvas = canvas[:win_h, :win_w]
-    return canvas
+    # keep exact window size
+    return canvas[:win_h, :win_w]
 
 ROOT_DIR = Path(__file__).resolve().parent
 PREDICTIONS_ROOT = ROOT_DIR / CONFIG["predictions"]["root"]
@@ -312,32 +343,27 @@ for img_id in common:
     for pos in range(n_imgs):
         prompt = f"Score for image {pos + 1} ({CONFIG['scoring']['min']}–{CONFIG['scoring']['max']}): "
         print(prompt, end='', flush=True)
-        # For each score, wait until a valid number is typed in the terminal.
         last_render_ts = 0.0
         while True:
-            # Process GUI events and allow the user to resize the window
-            cv2.waitKey(30)
-            # detect window resize (or periodically re-render to keep responsive)
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord('1'):  # 1 = native (full-res, no resize)
+                native_scale = True
+            else:  # 0 = fit-to-window
+                native_scale = False
+
             try:
                 _x, _y, w, h = cv2.getWindowImageRect(win_name)
             except Exception:
                 w, h = last_w, last_h
+
             now = time.time()
             if (w, h) != (last_w, last_h) or (now - last_render_ts) > 0.3:
-                # Recompose the grid to fit the new window size
-                try:
-                    disp = compose_grid(shuffled_imgs, numeric_labels, max(1, w), max(1, h))
-                    cv2.imshow(win_name, disp)
-                except Exception:
-                    # Fallback: simple uniform resize
-                    ih, iw = shuffled_imgs[0].shape[:2]
-                    scale = min(max(1e-6, w / iw), max(1e-6, h / ih))
-                    disp = cv2.resize(shuffled_imgs[0], (max(1, int(iw * scale)), max(1, int(ih * scale))))
-                    cv2.imshow(win_name, disp[:h, :w])
+                disp = compose_grid(shuffled_imgs, numeric_labels, max(1, w), max(1, h), native_scale=native_scale)
+                cv2.imshow(win_name, disp)
                 last_w, last_h = w, h
                 last_render_ts = now
 
-            # Non-blocking check for stdin input
+            # stdin handling unchanged ...
             rlist, _, _ = select.select([sys.stdin], [], [], 0)
             if rlist:
                 line = sys.stdin.readline().strip()
@@ -348,11 +374,10 @@ for img_id in common:
                         break
                 except Exception:
                     pass
-                print(
-                    f"Please enter a number from {CONFIG['scoring']['min']} to {CONFIG['scoring']['max']}:\n" +
-                    (guidelines if guidelines else ""),
-                    flush=True,
-                )
+                print(f"Please enter a number from {CONFIG['scoring']['min']} to {CONFIG['scoring']['max']}:\n" +
+                    ("\n".join(CONFIG["scoring"]["guidelines"]) if CONFIG["scoring"].get("guidelines") else ""),
+                    flush=True)
+
 
     # Map position-based scores back to original model order and write a
     # single row with one score per model (columns align with MODEL_FOLDERS).
