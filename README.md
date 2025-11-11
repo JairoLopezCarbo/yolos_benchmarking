@@ -1,159 +1,191 @@
-# YOLO Segmentation Benchmarking
+# YOLO Segmentation: Train → Benchmark → Plot
 
-End-to-end pipeline to train YOLO segmentation models (Ultralytics), benchmark them on a fixed image set, collect human quality scores, and plot timing vs. quality comparisons.
+This repo provides a simple, reproducible pipeline to:
 
-This repo includes four scripts that form a simple workflow:
-
-1) train_models.py → trains and exports .pt models
-2) benchmark_models.py → runs inference, saves overlays, records timing
-3) grade_predictions.py → interactive grader to assign 1–10 quality scores
-4) plot_grades.py → plots timing breakdowns and human scores per model
+1) Train Ultralytics YOLO segmentation models
+2) Benchmark trained models over a small image set, saving overlays and a per-image TSV
+3) Plot timing breakdown and detection metrics per model
 
 
-## Requirements
+## Quick start (in order)
 
-- Python 3.10+ recommended
-- Packages:
-	- ultralytics
-	- opencv-python or opencv-python-headless
-	- numpy
-	- pandas
-	- matplotlib
-
-Install (CPU example):
+1) Train models (or skip if you already have `.pt` files)
 
 ```bash
-pip install ultralytics opencv-python-headless numpy pandas matplotlib
+python train_models.py
 ```
 
-GPU tip: set `device="0"` (or the GPU index) in the configs below to use CUDA if available.
-
-
-## Data & layout
-
-- Dataset YAML for training: `containers_dataset/data.yaml`
-- Benchmark images: place test images in `benchmark_images/`
-- Trained models will be written to: `trained_models/`
-- Predictions (overlays + timing CSVs) will be written to: `predictions/`
-- Human scores CSV (output of the grader): `graded_predictions.csv`
-- Final plot image: `plot.png`
-
-Example repo structure (abridged):
-
-```
-containers_dataset/
-	data.yaml
-benchmark_images/
-trained_models/
-predictions/
-train_models.py
-benchmark_models.py
-grade_predictions.py
-plot_grades.py
-```
-
-
-## Quickstart: end-to-end
-
-1) Train models (or skip if you already have .pt files)
+2) Benchmark models and write per-image results under `predictions/<model>/benchmark.csv` (tab-separated)
 
 ```bash
-python3 train_models.py
+python benchmark_models.py
+```
+
+3) Plot results for selected prediction folders; saves `plot.png`
+
+```bash
+python plot_grades.py
+```
+
+The resulting figure is saved next to the script. Example:
+
+![plot](./plot.png)
+
+
+## Environment
+
+- Python 3.10+
+- Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Ultralytics auto-downloads hub checkpoints (e.g., `yolo11n-seg.pt`) when referenced by name. Trained `.pt` files are written to `trained_models/` by the training script.
+
+
+## 1) Training: `train_models.py`
+
+Two modes are supported through `CONFIG["mode"]`:
+
+- MULTI_MODELS: train several pretrained checkpoints with the same train params
+- SINGLE_MODEL_MULTI_CFG: train one pretrained checkpoint across a set of variants
+
+Key configuration (abridged):
+
+```python
+CONFIG = {
+	"mode": "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG",
+	"models": {
+		"multi_models": ["yolo11n-seg.pt", "yolo11s-seg.pt", ...],
+		"single_model": "yolo11n-seg.pt",
+	},
+	"train": {
+		"common": {"imgsz": 640, "epochs": 50, "batch": -1, "device": "cpu"},
+		"variants": [{"epochs": 35}, {"epochs": 50}, ...],
+	},
+	"data": {"yaml": "containers_dataset/data.yaml"},
+	"output": {"dir": "trained_models"},
+}
+```
+
+Outputs: for each run the best checkpoint is copied to `trained_models/` with the pattern:
+
+```
+<model_stem>_epochs-<E>_imgsz-<S>.pt
 ```
 
 Notes:
-- Configure at the top of `train_models.py`:
-	- `CONFIG["mode"]`: `"MULTI_MODELS"` trains several pretrained checkpoints; `"SINGLE_MODEL_MULTI_CFG"` sweeps variants for one base checkpoint.
-	- `CONFIG["train"]["common"]`: shared args like `imgsz`, `epochs`, `device`.
-- Outputs (best checkpoints) are copied to `trained_models/<name>_epochs-<X>_imgsz-<Y>.pt`.
+- Set `device` to `"0"` (or similar) to use GPU.
+- Using a hub name like `yolo11n-seg.pt` will auto-download it on first use; no manual download required.
 
-2) Benchmark and generate overlays
 
-```bash
-python3 benchmark_models.py
+## 2) Benchmarking: `benchmark_models.py`
+
+This script runs inference on each image in your benchmark set several times, writes a single tab-separated row per image (mean timings over repeats; detection metrics from the first repeat), and saves an overlay image (from the first repeat only).
+
+Modes via `CONFIG["mode"]`:
+
+- MULTI_MODELS: evaluate multiple `.pt` files from `models_dir`
+- SINGLE_MODEL_MULTI_CFG: evaluate one `.pt` file across a list of predict-time variants
+
+Key configuration (abridged):
+
+```python
+CONFIG = {
+	"mode": "SINGLE_MODEL_MULTI_CFG",  # or "MULTI_MODELS"
+	"models": {
+		# filenames relative to models_dir
+		"multi_models": [
+			"yolo11n-seg_epochs-50_imgsz-640.pt",
+			"yolo11s-seg_epochs-50_imgsz-640.pt",
+		],
+		"single_model": "yolo11n-seg_epochs-50_imgsz-640.pt",
+	},
+	"models_dir": "trained_models",  # directory with your .pt files
+
+	"predict_common": {
+		"imgsz": 640, "conf": 0.25, "iou": 0.5,
+		"device": "cpu", "retina_masks": True, "verbose": False,
+	},
+	"variants": [  # merged with predict_common when in SINGLE_MODEL_MULTI_CFG
+		{"conf": 0.4, "iou": 0.25},
+		{"conf": 0.4, "iou": 0.50},
+		{"conf": 0.4, "iou": 0.75},
+	],
+
+	# Dataset folders
+	"images_dir": "benchmark_images/containers_test",
+	"images_subdir": "images",
+	"labels_subdir": "labels",  # YOLO labels (.txt), supports optional hash prefixes
+
+	"repeats": 5,                 # N repeats per image; timings are averaged
+	"out_root": "predictions",   # where results are stored
+
+	"eval": {"enabled": True, "iou_thr": 0.5, "match_by_class": False, "eval_mode": "masks"},
+	"visual": {"alpha": 0.35, "thickness": 3},
+}
+```
+
+Dataset expectations:
+- Images under `<images_dir>/<images_subdir>`
+- Labels under `<images_dir>/<labels_subdir>` using YOLO format (boxes or polygons)
+- Label filenames may include a hash before the image stem (the script matches by stem containment)
+
+Per-image TSV format (`predictions/<model>/benchmark.csv`, tab-separated):
+
+```
+image_id	total_ms	preprocess_ms	inference_ms	postprocess_ms	tp	fp	fn	mean_tp_iou_pct	std_tp_iou_pct
 ```
 
 Notes:
-- Configure at the top of `benchmark_models.py`:
-	- `CONFIG["mode"]`:
-		- `"MULTI_MODELS"` evaluates all `.pt` files under `trained_models/`.
-		- `"SINGLE_MODEL_MULTI_CFG"` evaluates one `.pt` across a sweep of `conf`/`iou`.
-	- `CONFIG["predict"]["common"]`: inference params (e.g., `imgsz`, `conf`, `iou`, `device`).
-- Outputs per model/variant folder in `predictions/<subfolder>/`:
-	- Overlay images for each input image
-	- `benchmark.csv` with timing rows (total, preprocess, inference, postprocess in ms)
+- Only the first repeat computes TP/FP/FN and IoU; timings are averaged across repeats.
+- Overlays are saved for the first repeat only. In `eval_mode="masks"`, translucent masks are drawn for TP/FP/FN.
 
-3) Grade visual quality (interactive)
 
-```bash
-python3 grade_predictions.py
+## 3) Plotting: `plot_grades.py`
+
+Reads `predictions/<model>/benchmark.csv` for the configured models and creates a grouped bar chart per model:
+
+- Left block (ms):
+  - Big bar: total avg with std errorbar
+  - Three thin bars: preprocess, inference, postprocess (with std errorbars)
+- Right block (%):
+  - found% = TP/(TP+FN) × 100
+  - hallucination% = FP/(TP+FP) × 100
+  - IoU mean % with std errorbar (pooled across images, weighted by TP)
+
+Key configuration in `plot_grades.py`:
+
+```python
+CONFIG = {
+	"show_legend": True,
+	"log_ms_axis": False,
+	"paths": {"predictions_root": "predictions", "out_png": "plot.png"},
+	"models": [
+		"yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.25",
+		"yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
+		"yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.75",
+	],
+}
 ```
 
-Notes:
-- This shows the same image across multiple model folders side-by-side and asks you to enter a score (1–10) for each position.
-- Configure at the top of `grade_predictions.py`:
-	- `CONFIG["predictions"]["models"]`: list of subfolders inside `predictions/` you want to compare.
-	- `CONFIG["display"]`: shuffle and labeling behavior.
-- Output: appends rows to `graded_predictions.csv`. It also writes timing summary rows (averages/std) per model at the top.
-- Requires a GUI/display for OpenCV windows.
-
-4) Plot timing vs. human scores
-
-```bash
-python3 plot_grades.py
-```
-
-Notes:
-- Reads `graded_predictions.csv` and saves `plot.png`.
-- Shows grouped timing bars (total with error bars; preprocess/inference/postprocess) and a separate bar for average human score with min/max whiskers.
+Tips:
+- Ensure `models` matches the subfolder names created under `predictions/` by the benchmark script.
+- The script auto-detects tab vs comma delimiter; TSV is preferred.
 
 
-## Script reference
+## FAQ
 
-### train_models.py
-Purpose: Train YOLO (Ultralytics) segmentation models using a simple `CONFIG` dict.
+Q: Do I need to download `yolo11n-seg.pt` manually?
 
-- Modes:
-	- `MULTI_MODELS`: loop over `CONFIG["models"]["pretrained"]` and train each with shared params.
-	- `SINGLE_MODEL_MULTI_CFG`: train one base checkpoint across `CONFIG["train"]["variants"]`.
-- Inputs: `containers_dataset/data.yaml`, Ultralytics checkpoints (e.g., `yolo11n-seg.pt`).
-- Output: best checkpoints copied to `trained_models/` with a descriptive filename.
-- Common knobs: `imgsz`, `epochs`, `batch`, `device`.
+A: No. Ultralytics downloads hub checkpoints the first time you use them. If you prefer local files (or are offline), place `.pt` files in `trained_models/` and reference them via `CONFIG["models"][...]` along with `models_dir` in `benchmark_models.py`.
 
-### benchmark_models.py
-Purpose: Benchmark trained models on `benchmark_images/`, save visual overlays, and record timings.
+Q: CPU vs GPU?
 
-- Modes:
-	- `MULTI_MODELS`: evaluate all `.pt` in `trained_models/`.
-	- `SINGLE_MODEL_MULTI_CFG`: evaluate one `.pt` with several `conf`/`iou` variants.
-- Inputs: `.pt` models, images in `benchmark_images/`.
-- Outputs: per model/variant folder in `predictions/` with images and `benchmark.csv`.
-- Visual settings: `CONFIG["visual"]` lets you choose `mode` (`masks` or `boxes`), transparency, thickness, legend behavior.
+A: Set `device` in both training and benchmarking configs. Use `"0"` (or `"0,1"`) to target GPUs, or `"cpu"` to stay on CPU.
 
-### grade_predictions.py
-Purpose: Human-in-the-loop grading of visual quality (1–10) per image across models.
+Q: Boxes vs masks evaluation?
 
-- Inputs: list of model subfolders under `predictions/` containing the overlay images.
-- Behavior: displays tiles of the same image from each model; you type a number (1–10) in the terminal per position.
-- Output: `graded_predictions.csv` with timing summaries followed by one row per image with your scores.
-
-### plot_grades.py
-Purpose: Create a combined chart of timing breakdowns and human scores.
-
-- Input: `graded_predictions.csv`.
-- Output: `plot.png` (and also shows an interactive figure if a display is available).
-- Options: `CONFIG["show_legend"]`, `CONFIG["log_ms_axis"]`.
-
-
-## Tips & troubleshooting
-
-- GPU usage: set `device="0"` in `train_models.py` and `benchmark_models.py` configs. Keep `half=True` for faster FP16 inference on supported GPUs.
-- Matching images: `grade_predictions.py` expects the same image IDs across all selected prediction folders; missing images are skipped.
-- OpenCV display: on headless servers, you may need X forwarding or a desktop session. The grader requires windows; use `opencv-python` (GUI). For non-GUI environments, `opencv-python-headless` is fine for the other scripts.
-- File names: output files include epochs/imgsz in the name to keep variants clear.
-
-
-## License
-
-MIT (or your chosen license). Update this section if needed.
+A: Choose via `CONFIG["eval"]["eval_mode"]` in `benchmark_models.py` (`"boxes"` or `"masks"`). Label polygons are supported when present; otherwise boxes are used.
 

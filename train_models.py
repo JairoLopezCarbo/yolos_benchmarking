@@ -11,7 +11,6 @@ Modes supported:
 
 Output filename format: <model_name>_epochs-<X>_imgsz-<Y>.pt (model_name without .pt)
 """
-import os
 import shutil
 from pathlib import Path
 
@@ -22,21 +21,16 @@ from ultralytics import YOLO
 # =============================
 CONFIG = {
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG"
-    "data": {
-        "yaml": "containers_dataset/data.yaml",  # path to dataset yaml
-    },
-    "models": {
-        # Pretrained checkpoints from Ultralytics Hub (strings are fine; no local file required)
-        "pretrained": [
+    "models": { # Pretrained checkpoints from Ultralytics Hub (strings are fine; no local file required)
+        "multi_models": [
             "yolo11n-seg.pt",
             "yolo11s-seg.pt",
             "yolo11m-seg.pt",
+            "yolo11l-seg.pt",
+            "yolo11x-seg.pt",
         ],
-        # Base model for SINGLE_PRETRAIN_MULTI_CFG
-        "single_pretrain": "yolo11n-seg.pt",
-    },
-    "output": {
-        "dir": "trained_models",  # directory to save final .pt exports
+        # Base model for SINGLE_MODEL_MULTI_CFG mode
+        "single_model": "yolo11n-seg.pt",
     },
     "train": {
         # Common training args (applied to all runs unless overridden by a variant)
@@ -53,6 +47,15 @@ CONFIG = {
             {"epochs": 65, "imgsz": 640},
         ],
     },
+    
+    "data": {
+        "yaml": "containers_dataset/data.yaml",  # path to dataset yaml
+    },
+    
+    "output": {
+        "dir": "trained_models",  # directory to save final .pt exports
+    },
+    
 }
 
 # --------------------
@@ -84,7 +87,7 @@ def run_multi_models(cfg: dict):
     out_dir = Path(cfg["output"]["dir"])    
     common = dict(cfg["train"]["common"])
 
-    for prt_model in cfg["models"]["pretrained"]:
+    for prt_model in cfg["models"]["multi_models"]:
         print(f"\n>>> Training from pretrained: {prt_model}")
         model = YOLO(prt_model)
         results = model.train(data=data_yaml, **common)
@@ -98,7 +101,7 @@ def run_multi_models(cfg: dict):
 def run_single_model_multi_cfg(cfg: dict):
     data_yaml = cfg["data"]["yaml"]
     out_dir = Path(cfg["output"]["dir"])    
-    base_model = cfg["models"]["single_pretrain"]
+    base_model = cfg["models"]["single_model"]
     common = dict(cfg["train"]["common"])
     variants = list(cfg["train"].get("variants", []))
 

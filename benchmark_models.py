@@ -28,12 +28,26 @@ from ultralytics import YOLO
 # Config (minimal)
 # =============================
 CONFIG = {
-    "mode": "SINGLE_MODEL_MULTI_CFG",  # or "MULTI_MODELS"
+    "mode": "MULTI_MODELS",  # "MULTI_MODELS" or "SINGLE_MODEL_MULTI_CFG"
+    # Model configuration mirroring train_models.py structure
     "models_dir": "trained_models",
-    "single_model": "trained_models/yolo11n-seg_epochs-50_imgsz-640.pt",
+    "models": {
+        # Trained checkpoints (filenames relative to models_dir)
+        "multi_models": [
+            "yolo11n-seg_epochs-50_imgsz-640.pt",
+            "yolo11s-seg_epochs-50_imgsz-640.pt",
+            "yolo11m-seg_epochs-50_imgsz-640.pt",
+            "yolo11l-seg_epochs-50_imgsz-640.pt",
+            "yolo11x-seg_epochs-50_imgsz-640.pt",
+        ],
+        # Single base model for SINGLE_MODEL_MULTI_CFG mode (relative filename)
+        "single_model": "yolo11n-seg_epochs-50_imgsz-640.pt",
+    },
+    # Directory containing the trained model .pt files
+    
     "predict_common": {
         "imgsz": 640,
-        "conf": 0.25,
+        "conf": 0.4,
         "iou": 0.5,
         "classes": None,
         "half": False,
@@ -46,6 +60,14 @@ CONFIG = {
         {"conf": 0.4, "iou": 0.50},
         {"conf": 0.4, "iou": 0.75},
     ],
+    "eval": {
+        "enabled": True,
+        "iou_thr": 0.5,
+        "match_by_class": False,   # set True to require class match
+        "eval_mode": "masks",       # "boxes" | "masks" 
+    },
+    
+    
     # Dataset root containing two subfolders (always assumed):
     #   <images_dir>/<images_subdir>
     #   <images_dir>/<labels_subdir>
@@ -62,12 +84,7 @@ CONFIG = {
         "alpha": 0.35,
         "thickness": 3,
     },
-    "eval": {
-        "enabled": True,
-        "iou_thr": 0.5,
-        "match_by_class": False,   # set True to require class match
-        "eval_mode": "masks",       # "boxes" | "masks" 
-    },
+
 }
 
 # =============================
@@ -264,7 +281,7 @@ def draw_eval_overlay(img: np.ndarray,
     # TP: green on predicted boxes
     for gi, pi, _ in matches:
         x1, y1, x2, y2 = pr_boxes[pi].astype(int)
-    cv2.rectangle(out, (x1, y1), (x2, y2), (0, 170, 0), thickness)
+        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 170, 0), thickness)
     # FP: red on predicted boxes not matched
     for pi in unmatched_pr:
         x1, y1, x2, y2 = pr_boxes[pi].astype(int)
@@ -398,6 +415,7 @@ def predict_one_image(model: YOLO,
 
     rows = []
     mean_tp_iou_pct_first = ""
+    std_tp_iou_pct_first = ""
 
     for rep in range(repeats):
         t0 = time.perf_counter()
@@ -414,6 +432,7 @@ def predict_one_image(model: YOLO,
             "fp": "",
             "fn": "",
             "mean_tp_iou_pct": "",
+            "std_tp_iou_pct": "",
         }
 
         if rep == 0 and eval_cfg.get("enabled", True):
@@ -457,9 +476,13 @@ def predict_one_image(model: YOLO,
 
             # Mean TP IoU in percent
             if tp > 0:
-                mean_iou = np.mean([m[2] for m in matches]) * 100.0
+                ious = np.array([m[2] for m in matches], dtype=np.float32)
+                mean_iou = float(np.mean(ious) * 100.0)
+                std_iou = float(np.std(ious) * 100.0)
                 mean_tp_iou_pct_first = round(float(mean_iou), 2)
+                std_tp_iou_pct_first = round(float(std_iou), 2)
                 row["mean_tp_iou_pct"] = mean_tp_iou_pct_first
+                row["std_tp_iou_pct"] = std_tp_iou_pct_first
 
             # Draw evaluation overlay
             if mode == "boxes":
@@ -533,17 +556,60 @@ def predict_one_image(model: YOLO,
 
 
 def save_csv(csv_path: Path, image_id: str, rows: List[Dict]):
+    """Aggregate repeats into a single line per image.
+    - Timing columns become the mean over repeats.
+    - TP/FP/FN/IoU stats are taken from the first repeat (evaluation only done there).
+    - Output is tab-separated.
+    """
+    if not rows:
+        return
+
+    # Collect timing means (ignore non-numeric / empty values)
+    timing_keys = ["total_ms", "preprocess_ms", "inference_ms", "postprocess_ms"]
+    means = {}
+    for k in timing_keys:
+        vals = []
+        for r in rows:
+            v = r.get(k, "")
+            if isinstance(v, (int, float)) and not np.isnan(v):
+                vals.append(float(v))
+        means[k] = round(float(np.mean(vals)) if vals else float("nan"), 3)
+
+    first = rows[0]
+    tp = first.get("tp", "")
+    fp = first.get("fp", "")
+    fn = first.get("fn", "")
+    mean_iou = first.get("mean_tp_iou_pct", "")
+    std_iou = first.get("std_tp_iou_pct", "")
+
     new = not csv_path.exists()
     with open(csv_path, "a", newline="") as f:
-        w = csv.writer(f)
+        w = csv.writer(f, delimiter='\t')
         if new:
-            w.writerow(["image_id", "repeat_idx", "total_ms", "preprocess_ms", "inference_ms", "postprocess_ms", "tp", "fp", "fn", "mean_tp_iou_pct"])
-        for i, r in enumerate(rows):
             w.writerow([
-                image_id, i,
-                r["total_ms"], r["preprocess_ms"], r["inference_ms"], r["postprocess_ms"],
-                r["tp"], r["fp"], r["fn"], r["mean_tp_iou_pct"],
+                "image_id",
+                "total_ms",
+                "preprocess_ms",
+                "inference_ms",
+                "postprocess_ms",
+                "tp",
+                "fp",
+                "fn",
+                "mean_tp_iou_pct",
+                "std_tp_iou_pct",
             ])
+        w.writerow([
+            image_id,
+            means["total_ms"],
+            means["preprocess_ms"],
+            means["inference_ms"],
+            means["postprocess_ms"],
+            tp,
+            fp,
+            fn,
+            mean_iou,
+            std_iou,
+        ])
 
 
 # =============================
@@ -555,8 +621,13 @@ def run_multi_models(cfg: dict):
     images_base = Path(cfg["images_dir"]) / cfg.get("images_subdir", "images")
     images = list_images(images_base)
     out_root = Path(cfg["out_root"]) ; ensure_dir(out_root)
-    models_dir = Path(cfg["models_dir"])
-    model_paths = sorted([p for p in models_dir.iterdir() if p.suffix == ".pt"])
+    models_dir = Path(cfg["models_dir"]).resolve()
+    model_list = cfg.get("models", {}).get("multi_models")
+    if model_list:
+        model_paths = [models_dir / fn for fn in model_list]
+    else:
+        # fallback: all .pt files
+        model_paths = sorted([p for p in models_dir.iterdir() if p.suffix == ".pt"])
 
     for mpath in model_paths:
         model = YOLO(str(mpath))
@@ -577,7 +648,8 @@ def run_single_model_multi_cfg(cfg: dict):
     images = list_images(images_base)
     out_root = Path(cfg["out_root"]) ; ensure_dir(out_root)
 
-    model_path = Path(cfg["single_model"]).resolve()
+    single_rel = cfg.get("models", {}).get("single_model") or ""
+    model_path = (Path(cfg["models_dir"]).resolve() / single_rel).resolve()
     model = YOLO(str(model_path))
     base = model_path.stem
 
