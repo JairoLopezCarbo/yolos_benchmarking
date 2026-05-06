@@ -9,15 +9,5 @@ __pycache__/
 .venv/
 venv/
 
-# Input / Output datasets
-datasets/
-containers_seg/
-contenedores_seg/
-labelstudio_export/
-labelstudio_yolo/
-benchmark_images/
-
-# Output predictions and models
-predictions/
-trained_models/
-models/
+# Input / Output data
+in_out_data/

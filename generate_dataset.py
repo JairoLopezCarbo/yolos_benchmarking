@@ -7,10 +7,10 @@ import shutil
 # =============================
 CONFIG = {
     # Original folder exported from Label Studio in YOLO format
-    "source_dir": "labelstudio_yolo/TRG_containers",
+    "source_dir": "in_out_data/labelstudio_yolo/TRG_containers",
     
     # Target folder compatible with Ultralytics
-    "output_dir": "datasets/TRG_containers",
+    "output_dir": "in_out_data/datasets/TRG_containers",
     
     # Recommended split for ~120 images
     "split_ratios": {

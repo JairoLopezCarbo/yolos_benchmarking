@@ -20,40 +20,82 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
+import curses
+import json
 
 # =============================
 # Centralized configuration
 # =============================
 CONFIG = {
-    # List of model folders (under predictions/) to include in the plot
-    # e.g. ["yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.25", ...]
-    "models": [
-        # fill with your desired prediction subfolders
-        "yolo11n-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
-        "yolo11s-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
-        "yolo11m-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
-        "yolo11l-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
-        "yolo11x-seg_epochs-50_imgsz-640_CONF-0.4_IOU-0.5",
-    ],
-    # Plot options
-    "show_legend": True,       # whether to display the legend
-    "log_ms_axis": False,      # time axis scale: True=logarithmic, False=linear
-    # Paths (relative to this script's folder)
-    "paths": {
-        "predictions_root": "predictions",
-        "out_png": "plot.png",
+    # Directory containing the per-model benchmark.csv results to select interactively
+    "models_benchmark": "in_out_data/models_benchmark",
+    
+    "plot": {
+        "show_legend": True,       # whether to display the legend
+        "log_ms_axis": False,      # time axis scale: True=logarithmic, False=linear
     },
 
-    
+    "output": {
+        "dir": "in_out_data/models_benchmark",
+        "file_name": "plot",
+    }
 }
 
-ROOT = Path(__file__).resolve().parent
-OUT_PNG = ROOT / CONFIG["paths"]["out_png"]
-PRED_ROOT = ROOT / CONFIG["paths"]["predictions_root"]
+def _interactive_select_model(paths: list[Path], multi: bool = True) -> list[Path]:
+    labels = [p.name for p in paths]
 
+    def _curses_main(stdscr):
+        curses.curs_set(0)
+        idx = 0
+        selected = [False] * len(labels)
+        while True:
+            stdscr.clear()
+            for i, lab in enumerate(labels):
+                prefix = "[x]" if selected[i] else "[ ]"
+                if i == idx:
+                    stdscr.addstr(i, 0, f"> {prefix} {lab}", curses.A_REVERSE)
+                else:
+                    stdscr.addstr(i, 0, f"  {prefix} {lab}")
+            stdscr.addstr(len(labels) + 1, 0, "Use Up/Down, Space to (de)select, Enter to confirm, q to quit")
+            key = stdscr.getch()
+            if key in (curses.KEY_UP, ord('k')):
+                idx = (idx - 1) % len(labels)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                idx = (idx + 1) % len(labels)
+            elif key == ord(' '):
+                if multi:
+                    selected[idx] = not selected[idx]
+                else:
+                    selected = [False] * len(labels)
+                    selected[idx] = True
+            elif key in (10, 13):  # Enter
+                break
+            elif key in (ord('q'), 27):  # q or ESC
+                break
+        chosen = [paths[i] for i, sel in enumerate(selected) if sel]
+        if not multi and not chosen:
+            chosen = [paths[idx]] if paths else []
+        return chosen
 
-def read_benchmarks(models: list[str]):
+    try:
+        return curses.wrapper(_curses_main)
+    except Exception:
+        # fallback to simple numeric input
+        print("Terminal selector unavailable; please choose by number (comma separated for multiple):")
+        for i, lab in enumerate(labels):
+            print(f"  {i}: {lab}")
+        ans = input("Select: ").strip()
+        if not ans:
+            return []
+        try:
+            indices = [int(x.strip()) for x in ans.split(',')]
+            if not multi and indices:
+                indices = [indices[0]]
+            return [paths[i] for i in indices if 0 <= i < len(paths)]
+        except Exception:
+            return []
+
+def read_benchmarks(models: list[str], pred_root: Path):
     """Read per-model benchmark.tsv files and compute timing stats and metrics.
     Returns:
       - models (same order)
@@ -64,7 +106,7 @@ def read_benchmarks(models: list[str]):
     metric_stats = {m: {} for m in models}
 
     for m in models:
-        csv_path = PRED_ROOT / m / 'benchmark.csv'
+        csv_path = pred_root / m / 'benchmark.csv'
         if not csv_path.exists():
             print(f"Warning: missing {csv_path}")
             # leave NaNs
@@ -162,7 +204,7 @@ def read_benchmarks(models: list[str]):
     return models, timing_stats, metric_stats
 
 
-def plot(models, benchmark, metrics, out_png=OUT_PNG):
+def plot(models, benchmark, metrics, out_png: Path, plot_cfg: dict):
     n = len(models)
     x = np.arange(n)
     # group layout parameters
@@ -231,7 +273,7 @@ def plot(models, benchmark, metrics, out_png=OUT_PNG):
     all_times = [v for v in total_avgs + pre_avgs + inf_avgs + post_avgs if (v is not None and not math.isnan(v))]
     if all_times:
         min_pos = min([v for v in all_times if v > 0]) if any(v > 0 for v in all_times) else 1e-3
-        if CONFIG.get("log_ms_axis", True):
+        if plot_cfg.get("log_ms_axis", False):
             ax_time.set_yscale('log')
         ax_time.set_ylim(max(min_pos * 0.5, 1e-3), max(all_times) * 1.6)
 
@@ -260,7 +302,7 @@ def plot(models, benchmark, metrics, out_png=OUT_PNG):
     # Build combined legend with proxies so min/max entry is shown
     lines_time, labels_time = ax_time.get_legend_handles_labels()
     lines_score, labels_score = ax_score.get_legend_handles_labels()
-    if CONFIG.get("show_legend", True):
+    if plot_cfg.get("show_legend", True):
         legend_handles = lines_time + lines_score
         legend_labels = labels_time + labels_score
         # place legend centered below the axes, inside the figure, so it appears in the PNG
@@ -276,7 +318,7 @@ def plot(models, benchmark, metrics, out_png=OUT_PNG):
     plt.title('Model timing breakdown and detection metrics')
     plt.tight_layout()
     # make room at the bottom for the legend placed below the axes (if shown)
-    plt.subplots_adjust(bottom=0.22 if CONFIG.get("show_legend", True) else 0.1)
+    plt.subplots_adjust(bottom=0.22 if plot_cfg.get("show_legend", True) else 0.1)
 
     # Always save PNG
     try:
@@ -287,12 +329,39 @@ def plot(models, benchmark, metrics, out_png=OUT_PNG):
 
 
 def main():
-    models = CONFIG.get('models', [])
-    if not models:
-        print('No models configured in CONFIG["models"].')
+    pred_root = Path(CONFIG.get("models_benchmark", "in_out_data/models_benchmark"))
+    out_cfg = CONFIG.get("output", {})
+    out_dir = Path(out_cfg.get("dir", "in_out_data/models_benchmark"))
+    out_file = out_cfg.get("file_name", "plot")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_png = out_dir / f"{out_file}.png"
+    
+    plot_cfg = CONFIG.get("plot", {})
+
+    if not pred_root.exists():
+        print(f"Directory {pred_root} does not exist.")
         return
-    models, benchmark, metrics = read_benchmarks(models)
-    plot(models, benchmark, metrics, out_png=OUT_PNG)
+
+    candidates = [p for p in pred_root.iterdir() if p.is_dir() and (p / "benchmark.csv").exists()]
+    candidates = sorted(candidates)
+    
+    if not candidates:
+        print(f"No benchmark.csv files found inside subfolders of {pred_root}.")
+        return
+        
+    chosen_paths = _interactive_select_model(candidates)
+    if not chosen_paths:
+        print("No models selected; aborting.")
+        return
+        
+    models = sorted([p.name for p in chosen_paths])
+    
+    print("Configuration used:")
+    print(json.dumps(CONFIG, indent=2))
+    print(f"\nSelected models for plotting: {models}")
+    
+    models, benchmark, metrics = read_benchmarks(models, pred_root)
+    plot(models, benchmark, metrics, out_png, plot_cfg)
 
 
 if __name__ == '__main__':

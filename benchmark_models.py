@@ -35,11 +35,11 @@ from ultralytics import YOLO
 # =============================
 CONFIG = {
     # Directory containing the trained model files to select interactively
-    "models_yolo": "models",
+    "models_yolo": "in_out_data/models",
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" or "SINGLE_MODEL_MULTI_CFG"
     
     # Path to dataset YAML folder, always uses `test` folders
-    "dataset_yaml": "dataset/data.yaml",
+    "dataset_yaml": "in_out_data/dataset/data.yaml",
     
     "benchmark": {
         "predict_common": {
@@ -68,7 +68,7 @@ CONFIG = {
     },
     
     "output": {
-        "dir": "predictions",
+        "dir": "in_out_data/models_benchmark",
         "visual": {
             "alpha": 0.35,
             "thickness": 3,

@@ -20,7 +20,7 @@ from ultralytics import YOLO
 # =============================
 CONFIG = {
     # Path to dataset YAML (replaces previous `data` block)
-    "dataset_yaml": "containers_dataset/data.yaml",
+    "dataset_yaml": "in_out_data/containers_dataset/data.yaml",
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG"
     "models": { # Pretrained checkpoints from Ultralytics Hub (strings are fine; no local file required)
         "multi_models": [ # https://docs.ultralytics.com/tasks/segment/#val
@@ -56,7 +56,7 @@ CONFIG = {
     },
 
     "output": {
-        "dir": "trained_models",  # directory to save final .pt exports
+        "dir": "in_out_data/trained_models",  # directory to save final .pt exports
         "file_name": "TRG_containers",          # optional prefix for exported files, e.g. 'myexp' => myexp_yolo11n-seg_epochs-...pt
     },
     # Optional TensorRT engine export after each training run.
