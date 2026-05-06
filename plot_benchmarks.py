@@ -15,7 +15,6 @@ Usage:
 Saves `plot.png` and shows an interactive window.
 """
 from pathlib import Path
-import re
 import math
 import numpy as np
 import pandas as pd
