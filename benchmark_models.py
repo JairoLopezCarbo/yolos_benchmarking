@@ -18,73 +18,62 @@ If something is missing or mismatched, just run and inspect—minimal guards by 
 import csv
 import time
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+import json
+import curses
 
 import cv2
 import numpy as np
+try:
+    import yaml
+except Exception:
+    yaml = None
 from ultralytics import YOLO
 
 # =============================
 # Config (minimal)
 # =============================
 CONFIG = {
+    # Directory containing the trained model files to select interactively
+    "models_yolo": "models",
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" or "SINGLE_MODEL_MULTI_CFG"
-    # Model configuration mirroring train_models.py structure
-    "models_dir": "trained_models",
-    "models": {
-        # Trained checkpoints (filenames relative to models_dir)
-        "multi_models": [
-            "yolo11n-seg_epochs-50_imgsz-640.pt",
-            "yolo11s-seg_epochs-50_imgsz-640.pt",
-            "yolo11m-seg_epochs-50_imgsz-640.pt",
-            "yolo11l-seg_epochs-50_imgsz-640.pt",
-            "yolo11x-seg_epochs-50_imgsz-640.pt",
-        ],
-        # Single base model for SINGLE_MODEL_MULTI_CFG mode (relative filename)
-        "single_model": "yolo11n-seg_epochs-50_imgsz-640.pt",
-    },
-    # Directory containing the trained model .pt files
     
-    "predict_common": {
-        "imgsz": 640,
-        "conf": 0.4,
-        "iou": 0.5,
-        "classes": None,
-        "half": False,
-        "device": "cpu",
-        "verbose": False,
-        "retina_masks": True,
+    # Path to dataset YAML folder, always uses `test` folders
+    "dataset_yaml": "dataset/data.yaml",
+    
+    "benchmark": {
+        "predict_common": {
+            "imgsz": 640,
+            "conf": 0.4,
+            "iou": 0.5,
+            "classes": None,
+            "half": False,
+            "device": "cpu",
+            "verbose": False,
+            "retina_masks": True,
+        },
+        "variants": [
+            {"conf": 0.4, "iou": 0.25},
+            {"conf": 0.4, "iou": 0.50},
+            {"conf": 0.4, "iou": 0.75},
+        ],
     },
-    "variants": [
-        {"conf": 0.4, "iou": 0.25},
-        {"conf": 0.4, "iou": 0.50},
-        {"conf": 0.4, "iou": 0.75},
-    ],
+    
     "eval": {
         "enabled": True,
         "iou_thr": 0.5,
         "match_by_class": False,   # set True to require class match
         "eval_mode": "masks",       # "boxes" | "masks" 
+        "repeats": 5,
     },
     
-    
-    # Dataset root containing two subfolders (always assumed):
-    #   <images_dir>/<images_subdir>
-    #   <images_dir>/<labels_subdir>
-    # Labels may have a hash prefix, so any .txt whose filename contains the
-    # image stem will be considered its label file (e.g. 0abc123-frame_20.txt → frame_20.jpg).
-    "images_dir": "benchmark_images/containers_test",
-    "images_subdir": "images",
-    "labels_subdir": "labels",
-    "repeats": 5,
-    
-    "out_root": "predictions",
-    
-    "visual": {
-        "alpha": 0.35,
-        "thickness": 3,
+    "output": {
+        "dir": "predictions",
+        "visual": {
+            "alpha": 0.35,
+            "thickness": 3,
+        }
     },
-
 }
 
 # =============================
@@ -97,6 +86,121 @@ def list_images(folder: Path) -> List[Path]:
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+
+def _list_model_files(models_dir: Path) -> List[Path]:
+    """Return sorted list of model file Paths in models_dir (*.pt, *.onnx)."""
+    if not models_dir.exists():
+        return []
+    files = list(models_dir.glob("*.pt")) + list(models_dir.glob("*.onnx"))
+    return sorted(files)
+
+
+def _interactive_select_model(paths: List[Path], multi: bool) -> List[Path]:
+    labels = [p.name for p in paths]
+
+    def _curses_main(stdscr):
+        curses.curs_set(0)
+        idx = 0
+        selected = [False] * len(labels)
+        while True:
+            stdscr.clear()
+            for i, lab in enumerate(labels):
+                prefix = "[x]" if selected[i] else "[ ]"
+                if i == idx:
+                    stdscr.addstr(i, 0, f"> {prefix} {lab}", curses.A_REVERSE)
+                else:
+                    stdscr.addstr(i, 0, f"  {prefix} {lab}")
+            stdscr.addstr(len(labels) + 1, 0, "Use Up/Down, Space to (de)select, Enter to confirm, q to quit")
+            key = stdscr.getch()
+            if key in (curses.KEY_UP, ord('k')):
+                idx = (idx - 1) % len(labels)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                idx = (idx + 1) % len(labels)
+            elif key == ord(' '):
+                if multi:
+                    selected[idx] = not selected[idx]
+                else:
+                    selected = [False] * len(labels)
+                    selected[idx] = True
+            elif key in (10, 13):  # Enter
+                break
+            elif key in (ord('q'), 27):  # q or ESC
+                break
+        chosen = [paths[i] for i, sel in enumerate(selected) if sel]
+        if not multi and not chosen:
+            chosen = [paths[idx]] if paths else []
+        return chosen
+
+    try:
+        return curses.wrapper(_curses_main)
+    except Exception:
+        # fallback to simple numeric input
+        print("Terminal selector unavailable; please choose by number (comma separated for multiple):")
+        for i, lab in enumerate(labels):
+            print(f"  {i}: {lab}")
+        ans = input("Select: ").strip()
+        if not ans:
+            return []
+        try:
+            indices = [int(x.strip()) for x in ans.split(',')]
+            if not multi and indices:
+                indices = [indices[0]]
+            return [paths[i] for i in indices if 0 <= i < len(paths)]
+        except Exception:
+            return []
+
+
+def _choose_models(cfg: Dict, single_select: bool) -> List[Path]:
+    models_dir = Path(cfg.get("models_yolo", "models"))
+    candidates = _list_model_files(models_dir)
+    if candidates:
+        return _interactive_select_model(candidates, multi=not single_select)
+    raise FileNotFoundError(f"No model files found in {models_dir}.")
+
+
+def _get_test_images_and_labels_from_dataset_yaml(yaml_path: str) -> (Path, Optional[Path]):
+    if yaml is None:
+        raise ImportError("PyYAML not available; install pyyaml to parse dataset YAML files.")
+    ypath = Path(yaml_path)
+    if not ypath.exists():
+        raise FileNotFoundError(f"dataset_yaml not found: {yaml_path}")
+    with open(ypath, 'r') as f:
+        data = yaml.safe_load(f)
+
+    test_entry = data.get('test') or data.get('val')
+    if not test_entry:
+        raise KeyError("No 'test' or 'val' key found in dataset yaml")
+
+    if isinstance(test_entry, str):
+        images_dir = Path(test_entry)
+    elif isinstance(test_entry, list) and test_entry:
+        images_dir = Path(test_entry[0]).parent
+    else:
+        raise ValueError("Unexpected format for test entry in dataset yaml")
+
+    if not images_dir.is_absolute():
+        images_dir = (ypath.parent / images_dir).resolve()
+
+    labels_dir = None
+    images_str = str(images_dir)
+    if '/images/' in images_str:
+        cand = Path(images_str.replace('/images/', '/labels/'))
+        if cand.exists():
+            labels_dir = cand
+    if labels_dir is None:
+        parts = images_dir.parts
+        try:
+            idx = parts.index('images')
+            root = Path(*parts[:idx])
+            tail = Path(*parts[idx+1:])
+            cand = root / 'labels' / tail
+            if cand.exists():
+                labels_dir = cand
+        except ValueError:
+            pass
+
+    return images_dir, labels_dir
 
 
 # =============================
@@ -617,53 +721,84 @@ def save_csv(csv_path: Path, image_id: str, rows: List[Dict]):
 # =============================
 
 def run_multi_models(cfg: dict):
-    # Always use dataset root structure
-    images_base = Path(cfg["images_dir"]) / cfg.get("images_subdir", "images")
-    images = list_images(images_base)
-    out_root = Path(cfg["out_root"]) ; ensure_dir(out_root)
-    models_dir = Path(cfg["models_dir"]).resolve()
-    model_list = cfg.get("models", {}).get("multi_models")
-    if model_list:
-        model_paths = [models_dir / fn for fn in model_list]
-    else:
-        # fallback: all .pt files
-        model_paths = sorted([p for p in models_dir.iterdir() if p.suffix == ".pt"])
+    # Resolve dataset_yaml -> images/labels (test)
+    data_yaml = cfg.get("dataset_yaml")
+    images_base, labels_dir = _get_test_images_and_labels_from_dataset_yaml(data_yaml)
 
-    for mpath in model_paths:
+    images = list_images(images_base)
+
+    # output dir alias handling
+    out_root = Path(cfg.get("output", {}).get("dir", "predictions"))
+    ensure_dir(out_root)
+    visual_cfg = cfg.get("output", {}).get("visual", {})
+
+    # benchmark config mapping (predict_common / variants -> benchmark.predict_common / benchmark.variants)
+    bcfg = cfg.get("benchmark", {})
+    predict_common = bcfg.get("predict_common", {})
+    evals = bcfg.get("variants", [])
+    repeats_cfg = cfg.get("eval", {}).get("repeats", 1)
+
+    # choose models (multi-select expected)
+    selected = _choose_models(cfg, single_select=False)
+    if not selected:
+        print("No models selected; aborting.")
+        return
+
+    for mpath in selected:
         model = YOLO(str(mpath))
-        sub = out_root / mpath.stem
-        ensure_dir(sub)
-        csv_path = sub / "benchmark.csv"
-        for img_path in images:
-            # Use path relative to the images base (avoid including the "images" prefix)
-            img_id = img_path.relative_to(images_base).with_suffix("").as_posix().replace("/", "__")
-            out_img = sub / f"{img_id}{img_path.suffix.lower()}"
-            rows = predict_one_image(model, img_path, cfg["predict_common"], out_img, cfg["repeats"], cfg["eval"], cfg["visual"])
-            save_csv(csv_path, img_id, rows)
+        for variant in (evals or [dict()]):
+            pred_args = {**(predict_common or {}), **variant}
+            repeats = int(variant.get("repeats", repeats_cfg))
+            sub = out_root / f"{mpath.stem}_CONF-{pred_args.get('conf', '')}_IOU-{pred_args.get('iou', '')}"
+            ensure_dir(sub)
+            csv_path = sub / "benchmark.csv"
+            print(f"Evaluating {mpath.name} (repeats={repeats})")
+            print(f"Configuration used: {json.dumps(pred_args, indent=2)}")
+            for img_path in images:
+                img_id = img_path.relative_to(images_base).with_suffix("").as_posix().replace("/", "__")
+                out_img = sub / f"{img_id}{img_path.suffix.lower()}"
+                rows = predict_one_image(model, img_path, pred_args, out_img, repeats, cfg.get("eval", {}), visual_cfg)
+                save_csv(csv_path, img_id, rows)
 
 
 def run_single_model_multi_cfg(cfg: dict):
-    # Always use dataset root structure
-    images_base = Path(cfg["images_dir"]) / cfg.get("images_subdir", "images")
+    # Resolve dataset_yaml -> images/labels (test)
+    data_yaml = cfg.get("dataset_yaml")
+    images_base, _ = _get_test_images_and_labels_from_dataset_yaml(data_yaml)
     images = list_images(images_base)
-    out_root = Path(cfg["out_root"]) ; ensure_dir(out_root)
 
-    single_rel = cfg.get("models", {}).get("single_model") or ""
-    model_path = (Path(cfg["models_dir"]).resolve() / single_rel).resolve()
+    out_root = Path(cfg.get("output", {}).get("dir", "predictions"))
+    ensure_dir(out_root)
+    visual_cfg = cfg.get("output", {}).get("visual", {})
+
+    # benchmark config mapping
+    bcfg = cfg.get("benchmark", {})
+    predict_common = bcfg.get("predict_common", {})
+    evals = bcfg.get("variants", [])
+    repeats_cfg = cfg.get("eval", {}).get("repeats", 1)
+
+    # choose single model interactively or via config
+    chosen = _choose_models(cfg, single_select=True)
+    if chosen:
+        model_path = chosen[0]
+    else:
+        return
+
     model = YOLO(str(model_path))
     base = model_path.stem
 
-    for variant in cfg["variants"]:
-        pred_args = {**cfg["predict_common"], **variant}
-        sub = out_root / f"{base}_CONF-{pred_args['conf']}_IOU-{pred_args['iou']}"
+    for variant in (evals or [dict()]):
+        pred_args = {**(predict_common or {}), **variant}
+        repeats = int(variant.get("repeats", repeats_cfg))
+        sub = out_root / f"{base}_CONF-{pred_args.get('conf', '')}_IOU-{pred_args.get('iou', '')}"
         ensure_dir(sub)
         csv_path = sub / "benchmark.csv"
-        print(f"Evaluating {model_path.name} with {variant}")
+        print(f"Evaluating {model_path.name} (repeats={repeats})")
+        print(f"Configuration used: {json.dumps(pred_args, indent=2)}")
         for img_path in images:
-            # Use path relative to the images base (avoid including the "images" prefix)
             img_id = img_path.relative_to(images_base).with_suffix("").as_posix().replace("/", "__")
             out_img = sub / f"{img_id}{img_path.suffix.lower()}"
-            rows = predict_one_image(model, img_path, pred_args, out_img, cfg["repeats"], cfg["eval"], cfg["visual"])
+            rows = predict_one_image(model, img_path, pred_args, out_img, repeats, cfg.get("eval", {}), visual_cfg)
             save_csv(csv_path, img_id, rows)
 
 

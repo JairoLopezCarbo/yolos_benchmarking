@@ -24,20 +24,17 @@ CONFIG = {
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG"
     "models": { # Pretrained checkpoints from Ultralytics Hub (strings are fine; no local file required)
         "multi_models": [ # https://docs.ultralytics.com/tasks/segment/#val
-            "yolo11n-seg.pt",
-            "yolo11s-seg.pt",
-            "yolo11m-seg.pt",
-            "yolo11l-seg.pt",
-            "yolo11x-seg.pt",
-        ],
+            "yolo26n-seg.pt",
+            "yolo26s-seg.pt",
+            "yolo26m-seg.pt",        ],
         # Base model for SINGLE_MODEL_MULTI_CFG mode
-        "single_model": "yolo11n-seg.pt",
+        "single_model": "yolo26n-seg.pt",
     },
     "train": {
         # Common training args (applied to all runs unless overridden by a variant)
         "common": {
-            "imgsz": 640,
-            "epochs": 50,
+            "imgsz": 1024,
+            "epochs": 250,
             "batch": -1,     # Auto batch
             "device": "0", # Change to "0" for first GPU
         },
@@ -60,7 +57,7 @@ CONFIG = {
 
     "output": {
         "dir": "trained_models",  # directory to save final .pt exports
-        "file_name": "",          # optional prefix for exported files, e.g. 'myexp' => myexp_yolo11n-seg_epochs-...pt
+        "file_name": "TRG_containers",          # optional prefix for exported files, e.g. 'myexp' => myexp_yolo11n-seg_epochs-...pt
     },
     # Optional TensorRT engine export after each training run.
     # If enabled, the script will try to produce a .onnx (via Ultralytics export)
