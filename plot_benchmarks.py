@@ -35,7 +35,7 @@ CONFIG = {
     },
 
     "output": {
-        "dir": "in_out_data/models_benchmark",
+        "dir": "in_out_data/benchmark_plots",
         "file_name": "plot",
     }
 }

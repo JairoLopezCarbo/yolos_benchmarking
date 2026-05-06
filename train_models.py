@@ -20,7 +20,7 @@ from ultralytics import YOLO
 # =============================
 CONFIG = {
     # Path to dataset YAML (replaces previous `data` block)
-    "dataset_yaml": "in_out_data/containers_dataset/data.yaml",
+    "dataset_yaml": "in_out_data/datasets/TRG_containers/data.yaml",
     "mode": "MULTI_MODELS",  # "MULTI_MODELS" | "SINGLE_MODEL_MULTI_CFG"
     "models": { # Pretrained checkpoints from Ultralytics Hub (strings are fine; no local file required)
         "multi_models": [ # https://docs.ultralytics.com/tasks/segment/#val
@@ -34,20 +34,21 @@ CONFIG = {
         # Common training args (applied to all runs unless overridden by a variant)
         "common": {
             "imgsz": 1024,
-            "epochs": 250,
+            "epochs": 300,
+            "patience": 50,  # Early stopping (epochs to wait for no improvement)
             "batch": -1,     # Auto batch
             "device": "0", # Change to "0" for first GPU
         },
         # Variants for SINGLE_PRETRAIN_MULTI_CFG (merged over "common")
         "variants": [
-            {"epochs": 35, "imgsz": 640},
-            {"epochs": 50, "imgsz": 640},
-            {"epochs": 65, "imgsz": 640},
+            {"epochs": 35, "imgsz": 1024},
+            {"epochs": 50, "imgsz": 1024},
+            {"epochs": 65, "imgsz": 1024},
         ],
     },
     
     "engine": {
-        "enabled": False,
+        "enabled": True,
         "params": {
             "precision": "fp16",  # 'fp16' or 'fp32' -> controls trtexec build precision (adds --fp16 flag)
             "workspace": 4096,     # workspace size for trtexec (MB)
