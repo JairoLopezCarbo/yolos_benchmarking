@@ -92,7 +92,7 @@ def _model_stem(name: str) -> str:
 
 
 def _maybe_export_engine(pt_path: Path, out_dir: Path, out_name: str, engine_cfg: dict, imgsz: int) -> Path | None:
-    """If enabled in engine_cfg, export the `.pt` to `.onnx` (attempt) and run trtexec to save a `.engine`.
+    """If enabled in engine_cfg, export the `.pt` to `.engine`.
 
     Returns the Path to the generated .engine or None if not enabled.
     Raises informative errors if required tools are missing or export fails.
@@ -101,65 +101,39 @@ def _maybe_export_engine(pt_path: Path, out_dir: Path, out_name: str, engine_cfg
         return None
 
     params = engine_cfg.get("params", {})
-    precision = (params.get("precision") or "fp16").lower()
-    workspace = params.get("workspace")
+    half_flag = bool(params.get("half"))
+    workspace = params.get("workspace", 4) # ultralytics export uses GiB for workspace, typically just default or passed correctly
+    if workspace > 1000:
+        workspace = int(workspace / 1024)
 
     # Expect engine filename under out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     engine_path = out_dir / f"{out_name}.engine"
 
-    # Determine ONNX candidate path
-    onnx_path = out_dir / f"{out_name}.onnx"
-
-    if not onnx_path.exists():
-        # Try to export ONNX via Ultralytics YOLO export API
+    if not engine_path.exists():
         try:
-            half_flag = bool(params.get("half"))
-            print(f"Exporting {pt_path} -> ONNX (imgsz={imgsz}, half={half_flag})...")
+            print(f"Exporting {pt_path} -> ENGINE (imgsz={imgsz}, half={half_flag})...")
             model = YOLO(str(pt_path))
-            # If requested, attempt to convert internal weights to half precision before export.
-            if half_flag:
-                try:
-                    if hasattr(model, "model") and hasattr(model.model, "half"):
-                        model.model.half()
-                except Exception:
-                    # best-effort: continue even if half conversion not supported
-                    pass
-
-            # model.export returns path in newer versions; call and hope for creation
+            # model.export returns path in newer versions
             try:
-                model.export(format="onnx", imgsz=imgsz, simplify=True, half=half_flag)
+                exported_path = model.export(format="engine", imgsz=imgsz, simplify=True, half=half_flag, workspace=workspace)
             except TypeError:
-                # Some ultralytics versions may not accept `half` arg; call without it
-                model.export(format="onnx", imgsz=imgsz, simplify=True)
+                exported_path = model.export(format="engine", imgsz=imgsz, simplify=True)
+                
+            # If the output path from model.export is not our target engine path, move/rename it
+            # model.export usually saves in the same dir as the input model (pt_path)
+            candidates = list(pt_path.parent.glob(f"{pt_path.stem}*.engine"))
+            if candidates:
+                real_exported_path = candidates[0]
+                shutil.move(str(real_exported_path), str(engine_path))
+            elif exported_path and Path(exported_path).exists():
+                shutil.move(str(exported_path), str(engine_path))
+
         except Exception as e:
-            raise RuntimeError(f"ONNX export failed: {e}")
-
-        # Search for a produced onnx file near the pt or in out_dir
-        candidates = list(out_dir.glob(f"{out_name}*.onnx")) + list(pt_path.parent.glob(f"{pt_path.stem}*.onnx"))
-        if not candidates:
-            raise FileNotFoundError("ONNX file not found after export. Check model.export behaviour.")
-        onnx_path = candidates[0]
-
-    # Ensure trtexec is available
-    trtexec = shutil.which("trtexec")
-    if not trtexec:
-        raise FileNotFoundError("trtexec not found in PATH. Install TensorRT's trtexec to build .engine files.")
-
-    cmd = [trtexec, f"--onnx={str(onnx_path)}", f"--saveEngine={str(engine_path)}"]
-    if precision == "fp16":
-        cmd.append("--fp16")
-    if workspace:
-        cmd.append(f"--workspace={int(workspace)}")
-
-    print(f"Running trtexec to build engine: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"trtexec failed: {e}")
+            raise RuntimeError(f"Engine export failed: {e}")
 
     if not engine_path.exists():
-        raise FileNotFoundError("Engine file not produced by trtexec.")
+        raise FileNotFoundError("Engine file not produced.")
 
     return engine_path
 
